@@ -86,11 +86,14 @@ export component RecipeDetail inherits VerticalLayout {
             title: "Instructions";
 
             ScrollView {
-                Text {
-                    text: recipe.instructions;
-                    font-size: 14px;
-                    color: Theme.text-primary;
-                    wrap: word-wrap;
+                VerticalBox {
+                    padding: 16px;
+                    Text {
+                        text: recipe.instructions;
+                        font-size: 14px;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }
