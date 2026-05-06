@@ -29,6 +29,7 @@ export component AppWindow inherits Window {
 
     // モデルセットアップ
     callback download-model(string);   // model-id
+    callback retry-ollama();
 
     // ── State ─────────────────────────────────────────────────────────────────
     in-out property <[RecipeModel]> recipes: [];
@@ -45,6 +46,7 @@ export component AppWindow inherits Window {
 
     // モデルセットアップ
     in-out property <[ModelOptionModel]> available-models: [];
+    in-out property <bool> ollama-running: false;
     in-out property <string> download-model-name: "";
     in-out property <float> download-progress: 0.0;
     in-out property <string> download-downloaded-text: "0 MB";
@@ -115,8 +117,10 @@ export component AppWindow inherits Window {
         // ── Setup: モデル選択 ─────────────────────────────────────────────────
         if current-view == AppView.Setup: ModelSetupView {
             models: available-models;
+            ollama-running: ollama-running;
             vertical-stretch: 1;
             download-pressed(id) => { root.download-model(id); }
+            retry-ollama => { root.retry-ollama(); }
         }
 
         // ── Downloading: 進捗表示 ─────────────────────────────────────────────

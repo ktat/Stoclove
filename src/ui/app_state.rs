@@ -8,9 +8,9 @@ use slint::{ModelRc, VecModel};
 
 use crate::domain::ingredient::Ingredient;
 use crate::domain::recipe::{Recipe, Substitute};
-use crate::infra::ai::{AnalyzedRecipe, LlmClient, LlamaCppLlm, MockLlm};
+use crate::infra::ai::{LlmClient, MockLlm, OllamaLlm};
 use crate::infra::db::Database;
-use crate::infra::model_manager::{self, format_size, ModelInfo, AVAILABLE_MODELS};
+use crate::infra::model_manager::{self, format_size, ModelInfo, AVAILABLE_MODELS, OLLAMA_BASE_URL};
 use crate::infra::scraper::WebScraper;
 
 slint::include_modules!();
@@ -93,25 +93,30 @@ pub fn run_app(db_path: &str, data_dir: PathBuf) -> Result<()> {
     let model_options: Vec<ModelOptionModel> = AVAILABLE_MODELS.iter().map(to_model_option).collect();
     ui.set_available_models(ModelRc::new(VecModel::from(model_options)));
 
-    // 既存モデルの確認
-    if let Some((info, model_path)) = model_manager::find_installed_model(&data_dir) {
-        start_model_load(&ui, model_path.to_string_lossy().to_string(), info.name, &db, &llm);
+    // Ollama 疎通確認 → インストール済みモデル検索
+    let ollama_ok = model_manager::is_ollama_running(OLLAMA_BASE_URL);
+    ui.set_ollama_running(ollama_ok);
+
+    if ollama_ok {
+        if let Some(info) = model_manager::find_installed_model(OLLAMA_BASE_URL) {
+            activate_llm(&ui, info, &db, &llm);
+        } else {
+            ui.set_current_view(AppView::Setup);
+        }
     } else {
         ui.set_current_view(AppView::Setup);
     }
 
-    // ── download-model ────────────────────────────────────────────────────────
+    // ── download-model (Ollama pull) ──────────────────────────────────────────
     {
         let db = db.clone();
         let llm = llm.clone();
-        let data_dir = data_dir.clone();
         let ui_handle = ui.as_weak();
 
         ui.on_download_model(move |model_id| {
             let id = model_id.to_string();
             let Some(info) = model_manager::model_by_id(&id) else { return };
 
-            let dest = data_dir.join(info.filename);
             let downloaded = Arc::new(AtomicU64::new(0));
             let total = Arc::new(AtomicU64::new(0));
 
@@ -131,13 +136,13 @@ pub fn run_app(db_path: &str, data_dir: PathBuf) -> Result<()> {
                 let timer = slint::Timer::default();
                 timer.start(
                     slint::TimerMode::Repeated,
-                    std::time::Duration::from_millis(300),
+                    std::time::Duration::from_millis(400),
                     move || {
                         let dl = downloaded.load(Ordering::Relaxed);
                         let tot = total.load(Ordering::Relaxed);
                         let progress = if tot > 0 { dl as f32 / tot as f32 } else { 0.0 };
                         if let Some(ui) = ui_handle.upgrade() {
-                            ui.set_download_progress(progress);
+                            ui.set_download_progress(progress.min(1.0));
                             ui.set_download_downloaded_text(format_size(dl).into());
                             if tot > 0 {
                                 ui.set_download_total_text(format_size(tot).into());
@@ -145,36 +150,50 @@ pub fn run_app(db_path: &str, data_dir: PathBuf) -> Result<()> {
                         }
                     },
                 );
-                // タイマーをスコープ外に逃がして生かし続ける
                 std::mem::forget(timer);
             }
 
-            // ダウンロードスレッド
+            // pull スレッド
             let db2 = db.clone();
             let llm2 = llm.clone();
             let ui_handle2 = ui_handle.clone();
             std::thread::spawn(move || {
-                let result = model_manager::download_model(info, &dest, downloaded, total);
-                let path = dest.to_string_lossy().to_string();
-                let model_name = info.name.to_string();
+                let result =
+                    model_manager::pull_model(OLLAMA_BASE_URL, info.ollama_model, downloaded, total);
 
                 slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle2.upgrade() {
                         match result {
-                            Ok(()) => {
-                                start_model_load(&ui, path, &model_name, &db2, &llm2);
-                            }
+                            Ok(()) => activate_llm(&ui, info, &db2, &llm2),
                             Err(e) => {
                                 ui.set_current_view(AppView::Setup);
-                                ui.set_status_message(
-                                    format!("ダウンロード失敗: {}", e).into(),
-                                );
+                                ui.set_status_message(format!("ダウンロード失敗: {}", e).into());
                             }
                         }
                     }
                 })
                 .ok();
             });
+        });
+    }
+
+    // ── retry-ollama ──────────────────────────────────────────────────────────
+    {
+        let db = db.clone();
+        let llm = llm.clone();
+        let ui_handle = ui.as_weak();
+        ui.on_retry_ollama(move || {
+            let ok = model_manager::is_ollama_running(OLLAMA_BASE_URL);
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_ollama_running(ok);
+                if ok {
+                    if let Some(info) = model_manager::find_installed_model(OLLAMA_BASE_URL) {
+                        activate_llm(&ui, info, &db, &llm);
+                    }
+                } else {
+                    ui.set_status_message("Ollama がまだ起動していません".into());
+                }
+            }
         });
     }
 
@@ -380,50 +399,19 @@ pub fn run_app(db_path: &str, data_dir: PathBuf) -> Result<()> {
 
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
 
-/// モデルのロードを別スレッドで行い、完了したら Main ビューへ遷移する。
-fn start_model_load(
+/// Ollama LLM を有効化して Main ビューへ遷移する。
+fn activate_llm(
     ui: &AppWindow,
-    model_path: String,
-    model_name: &str,
+    info: &'static ModelInfo,
     db: &Arc<Mutex<Database>>,
     llm: &Arc<Mutex<Option<Arc<dyn LlmClient>>>>,
 ) {
-    ui.set_current_view(AppView::Loading);
-    ui.set_loading_model_name(model_name.into());
-
-    let ui_handle = ui.as_weak();
-    let llm = llm.clone();
-    let db = db.clone();
-
-    std::thread::spawn(move || {
-        let result = LlamaCppLlm::load(&model_path);
-        slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_handle.upgrade() {
-                match result {
-                    Ok(loaded) => {
-                        *llm.lock().unwrap() = Some(Arc::new(loaded));
-                        refresh_recipes(&ui, &db);
-                        let all_ings = db.lock().unwrap().all_ingredients().unwrap_or_default();
-                        ui.set_stock_ingredients(ModelRc::new(VecModel::from(
-                            to_ingredient_models(&all_ings),
-                        )));
-                        ui.set_current_view(AppView::Main);
-                    }
-                    Err(e) => {
-                        log::error!("モデルロード失敗: {}", e);
-                        // フォールバック: MockLlm で続行
-                        *llm.lock().unwrap() = Some(Arc::new(MockLlm));
-                        refresh_recipes(&ui, &db);
-                        ui.set_status_message(
-                            format!("モデル読み込み失敗、簡易解析で動作します: {}", e).into(),
-                        );
-                        ui.set_current_view(AppView::Main);
-                    }
-                }
-            }
-        })
-        .ok();
-    });
+    *llm.lock().unwrap() =
+        Some(Arc::new(OllamaLlm::new(OLLAMA_BASE_URL, info.ollama_model)));
+    refresh_recipes(ui, db);
+    let all_ings = db.lock().unwrap().all_ingredients().unwrap_or_default();
+    ui.set_stock_ingredients(ModelRc::new(VecModel::from(to_ingredient_models(&all_ings))));
+    ui.set_current_view(AppView::Main);
 }
 
 /// LLM が利用可能なら使い、なければ MockLlm にフォールバックする。

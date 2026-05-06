@@ -22,7 +22,6 @@ thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
 base64 = "0.22"
-llama-cpp-2 = "0.1"
 
 [build-dependencies]
 slint-build = "1"

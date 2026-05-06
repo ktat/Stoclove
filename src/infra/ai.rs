@@ -8,7 +8,6 @@ use crate::domain::recipe::{RawIngredient, Substitute};
 
 pub trait LlmClient: Send + Sync {
     /// テキストを解析し、レシピでなければ None を返す。
-    /// レシピであれば食材・手順・代替案を含む AnalyzedRecipe を返す。
     fn analyze_recipe(&self, text: &str) -> Result<Option<AnalyzedRecipe>>;
 }
 
@@ -18,8 +17,6 @@ pub struct AnalyzedRecipe {
     pub instructions: String,
     pub substitutes: Vec<Substitute>,
 }
-
-// ── OCR trait (platform FFI 向け) ─────────────────────────────────────────────
 
 pub trait OcrClient: Send + Sync {
     fn extract_text(&self, image_path: &str) -> Result<String>;
@@ -63,7 +60,6 @@ struct LlmSubstitute {
 
 // ── JSON ユーティリティ ────────────────────────────────────────────────────────
 
-/// LLM 出力から最初の完全な JSON オブジェクトを抽出する。
 fn extract_json(raw: &str) -> Option<&str> {
     let start = raw.find('{')?;
     let mut depth = 0i32;
@@ -102,11 +98,13 @@ fn extract_json(raw: &str) -> Option<&str> {
 
 fn parse_llm_output(raw: &str) -> Result<LlmOutput> {
     let json_str = extract_json(raw).ok_or_else(|| {
-        let preview = &raw[..raw.len().min(300)];
-        anyhow::anyhow!("LLM が JSON を出力しませんでした。出力: {}", preview)
+        anyhow::anyhow!(
+            "LLM が JSON を出力しませんでした。出力: {}",
+            &raw[..raw.len().min(300)]
+        )
     })?;
     serde_json::from_str(json_str)
-        .with_context(|| format!("JSON のパースに失敗: {}", json_str))
+        .with_context(|| format!("JSON パース失敗: {}", &json_str[..json_str.len().min(300)]))
 }
 
 fn llm_output_to_result(parsed: LlmOutput) -> Option<AnalyzedRecipe> {
@@ -149,7 +147,7 @@ fn llm_output_to_result(parsed: LlmOutput) -> Option<AnalyzedRecipe> {
 
 // ── プロンプト ─────────────────────────────────────────────────────────────────
 
-fn build_user_prompt(text: &str) -> String {
+fn build_prompt(text: &str) -> String {
     format!(
         r#"Analyze the text below. If it is NOT a recipe, return: {{"is_recipe": false}}
 
@@ -170,7 +168,7 @@ Rules:
 - Preserve original language (Japanese, English, etc.)
 - Separate number from unit: "200" + "g", NOT "200g"
 - Use "" for missing amount/unit
-- substitutes only for ingredients hard to find at regular supermarkets; [] if none
+- substitutes: only for ingredients hard to find at regular supermarkets; [] if none
 
 Text:
 {}"#,
@@ -178,152 +176,58 @@ Text:
     )
 }
 
-fn format_prompt_for_model(model_filename: &str, user_content: &str) -> String {
-    let f = model_filename.to_lowercase();
-    if f.contains("llama-3") || f.contains("llama3") {
-        format!(
-            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\
-             You are a recipe extraction assistant. Respond with valid JSON only, no other text.\
-             <|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}\
-             <|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-            user_content
-        )
-    } else if f.contains("gemma") {
-        format!(
-            "<start_of_turn>user\n\
-             You are a recipe extraction assistant. Respond with valid JSON only.\n\n{}\
-             <end_of_turn>\n<start_of_turn>model\n",
-            user_content
-        )
-    } else if f.contains("mistral") {
-        format!(
-            "[INST] You are a recipe extraction assistant. Respond with valid JSON only.\n\n{} [/INST]",
-            user_content
-        )
-    } else {
-        // Generic instruct template
-        format!(
-            "<|system|>You are a recipe extraction assistant. Respond with JSON only.</s>\
-             <|user|>{}</s><|assistant|>",
-            user_content
-        )
+// ── OllamaLlm ─────────────────────────────────────────────────────────────────
+
+pub struct OllamaLlm {
+    client: reqwest::blocking::Client,
+    base_url: String,
+    model: String,
+}
+
+impl OllamaLlm {
+    pub fn new(base_url: &str, model: &str) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .unwrap_or_default();
+        Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model: model.to_string(),
+        }
     }
 }
 
-// ── LlamaCppLlm ───────────────────────────────────────────────────────────────
-
-use llama_cpp_2::{
-    context::params::LlamaContextParams,
-    llama_backend::LlamaBackend,
-    llama_batch::LlamaBatch,
-    model::{params::LlamaModelParams, AddBos, Special},
-    model::LlamaModel,
-    sampling::LlamaSampler,
-};
-use std::num::NonZeroU32;
-
-pub struct LlamaCppLlm {
-    backend: Arc<LlamaBackend>,
-    model: Arc<LlamaModel>,
-    model_filename: String,
-}
-
-// llama-cpp-2 は LlamaModel / LlamaBackend に unsafe impl Send+Sync を提供している
-unsafe impl Send for LlamaCppLlm {}
-unsafe impl Sync for LlamaCppLlm {}
-
-impl LlamaCppLlm {
-    pub fn load(model_path: &str) -> Result<Self> {
-        log::info!("Loading model: {}", model_path);
-        let backend = LlamaBackend::init().context("llama.cpp バックエンドの初期化に失敗")?;
-        let model_params = LlamaModelParams::default();
-        let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
-            .context("モデルファイルの読み込みに失敗")?;
-
-        let filename = std::path::Path::new(model_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        log::info!("Model loaded: {}", filename);
-        Ok(Self {
-            backend: Arc::new(backend),
-            model: Arc::new(model),
-            model_filename: filename,
-        })
-    }
-
-    fn run_inference(&self, prompt: &str, max_new_tokens: usize) -> Result<String> {
-        // トークナイズはコンテキスト生成前に行う
-        let prompt_tokens = self
-            .model
-            .str_to_token(prompt, AddBos::Always)
-            .context("Tokenization failed")?;
-        let n_prompt = prompt_tokens.len();
-        if n_prompt == 0 {
-            return Ok(String::new());
-        }
-
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(Some(NonZeroU32::new(4096).unwrap()));
-        let mut ctx = self
-            .model
-            .new_context(&self.backend, ctx_params)
-            .context("コンテキストの作成に失敗")?;
-
-        // プロンプト全体をバッチにロード
-        let mut batch = LlamaBatch::new(n_prompt, 1);
-        for (i, &tok) in prompt_tokens.iter().enumerate() {
-            batch.add(tok, i as i32, &[0], i == n_prompt - 1)?;
-        }
-        ctx.decode(&mut batch).context("Prompt decode failed")?;
-
-        let mut sampler = LlamaSampler::greedy();
-        let mut n_cur = n_prompt as i32;
-        let mut output = String::new();
-
-        loop {
-            let new_token = sampler.sample(&ctx, batch.n_tokens() - 1);
-            sampler.accept(new_token);
-
-            if ctx.model.is_eog_token(new_token)
-                || (n_cur - n_prompt as i32) >= max_new_tokens as i32
-            {
-                break;
-            }
-
-            let piece = ctx
-                .model
-                .token_to_str(new_token, Special::Tokenize)
-                .unwrap_or_default();
-            output.push_str(&piece);
-
-            // JSON が完結したら早期終了
-            if extract_json(&output).is_some() {
-                break;
-            }
-
-            batch.clear();
-            batch.add(new_token, n_cur, &[0], true)?;
-            n_cur += 1;
-            ctx.decode(&mut batch)?;
-        }
-
-        Ok(output)
-    }
-}
-
-impl LlmClient for LlamaCppLlm {
+impl LlmClient for OllamaLlm {
     fn analyze_recipe(&self, text: &str) -> Result<Option<AnalyzedRecipe>> {
-        let user_prompt = build_user_prompt(text);
-        let prompt = format_prompt_for_model(&self.model_filename, &user_prompt);
+        let prompt = build_prompt(text);
 
-        log::debug!("Running LLM inference ({} chars prompt)...", prompt.len());
-        let raw = self.run_inference(&prompt, 1024)?;
-        log::debug!("LLM raw output: {}", &raw[..raw.len().min(500)]);
+        let body = serde_json::json!({
+            "model": self.model,
+            "prompt": prompt,
+            "format": "json",
+            "stream": false,
+            "options": { "temperature": 0.1, "num_predict": 1024 }
+        });
 
-        let parsed = parse_llm_output(&raw)?;
+        log::debug!("Calling Ollama model '{}'...", self.model);
+
+        let resp: serde_json::Value = self
+            .client
+            .post(format!("{}/api/generate", self.base_url))
+            .json(&body)
+            .send()
+            .context("Ollama へのリクエストに失敗しました")?
+            .json()
+            .context("Ollama レスポンスのパースに失敗しました")?;
+
+        let raw = resp["response"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Ollama レスポンスに response フィールドがありません"))?;
+
+        log::debug!("Ollama raw output: {}", &raw[..raw.len().min(500)]);
+
+        let parsed = parse_llm_output(raw)?;
         Ok(llm_output_to_result(parsed))
     }
 }
@@ -359,7 +263,6 @@ impl LlmClient for MockLlm {
                 continue;
             }
             if lower.contains("instruction")
-                || lower.contains("direction")
                 || lower.contains("step")
                 || lower.contains("作り方")
                 || lower.contains("手順")
@@ -384,10 +287,8 @@ impl LlmClient for MockLlm {
         }
 
         if ingredients.is_empty() && instructions_lines.is_empty() {
-            // テキストが短すぎる・意味を成さない場合はレシピではないと判定
             return Ok(None);
         }
-
         if ingredients.is_empty() {
             ingredients.push(RawIngredient {
                 name: "手順参照".into(),
@@ -406,7 +307,6 @@ impl LlmClient for MockLlm {
 }
 
 pub struct MockOcr;
-
 impl OcrClient for MockOcr {
     fn extract_text(&self, image_path: &str) -> Result<String> {
         log::info!("Mock OCR: {}", image_path);
