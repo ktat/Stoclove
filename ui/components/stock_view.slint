@@ -1,0 +1,74 @@
+import { ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IngredientModel } from "types.slint";
+
+export component StockView inherits VerticalLayout {
+    in property <[IngredientModel]> ingredients;
+    callback ingredient-clicked(string);
+
+    padding: 12px;
+    spacing: 8px;
+
+    Text {
+        text: "Tap an ingredient to find recipes that use it.";
+        font-size: 13px;
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+    }
+
+    ScrollView {
+        vertical-stretch: 1;
+
+        VerticalBox {
+            padding: 0px;
+            spacing: 6px;
+
+            if ingredients.length == 0: Text {
+                text: "Your pantry is empty.\nAdd some recipes first!";
+                horizontal-alignment: center;
+                color: Theme.text-hint;
+                font-size: 14px;
+            }
+
+            for ing in ingredients: ing-card := Rectangle {
+                height: 52px;
+                background: ing-touch.has-hover ? Theme.surface-variant : Theme.surface;
+                border-radius: 8px;
+                animate background { duration: 80ms; }
+
+                ing-touch := TouchArea {
+                    clicked => { root.ingredient-clicked(ing.name); }
+                }
+
+                HorizontalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    alignment: center;
+
+                    Text {
+                        text: ing.name;
+                        font-size: 15px;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    if ing.amount != "": Rectangle {
+                        height: 24px;
+                        width: 80px;
+                        background: Theme.tag-bg;
+                        border-radius: 4px;
+
+                        Text {
+                            text: ing.amount + (ing.unit != "" ? " " + ing.unit : "");
+                            font-size: 11px;
+                            color: Theme.tag-text;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

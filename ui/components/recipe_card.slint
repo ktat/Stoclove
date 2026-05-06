@@ -1,0 +1,72 @@
+import { Theme } from "theme.slint";
+import { RecipeModel } from "types.slint";
+
+export component RecipeCard inherits Rectangle {
+    in property <RecipeModel> recipe;
+    callback clicked();
+    callback delete-clicked();
+
+    height: 96px;
+    background: touch.has-hover ? Theme.surface-variant : Theme.surface;
+    border-radius: Theme.card-radius;
+    drop-shadow-blur: 3px;
+    drop-shadow-color: Theme.shadow;
+    animate background { duration: 100ms; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 0px;
+
+        VerticalLayout {
+            spacing: 4px;
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: recipe.title;
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                overflow: elide;
+            }
+
+            Text {
+                text: recipe.ingredient-names;
+                font-size: 12px;
+                color: Theme.text-secondary;
+                overflow: elide;
+            }
+
+            Text {
+                text: recipe.ingredient-count + " ingredients";
+                font-size: 11px;
+                color: Theme.text-hint;
+            }
+        }
+
+        // Delete button
+        del := Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 18px;
+            background: del-touch.has-hover ? Theme.danger : transparent;
+            animate background { duration: 80ms; }
+
+            del-touch := TouchArea {
+                clicked => { root.delete-clicked(); }
+            }
+
+            Text {
+                text: "x";
+                color: del-touch.has-hover ? white : Theme.text-hint;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

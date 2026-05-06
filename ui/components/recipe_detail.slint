@@ -1,0 +1,147 @@
+import { ScrollView, TabWidget, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { RecipeModel, IngredientModel, SubstituteModel } from "types.slint";
+
+export component RecipeDetail inherits VerticalLayout {
+    in property <RecipeModel> recipe;
+    in property <[IngredientModel]> ingredients;
+    in property <[SubstituteModel]> substitutes;
+
+    padding: 0px;
+    spacing: 0px;
+
+    // Source URL badge
+    if recipe.source-url != "": Rectangle {
+        height: 36px;
+        background: Theme.info-bg;
+        HorizontalBox {
+            padding: 8px;
+            Text {
+                text: "Source: " + recipe.source-url;
+                font-size: 11px;
+                color: Theme.info-text;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    TabWidget {
+        vertical-stretch: 1;
+
+        Tab {
+            title: "Ingredients";
+
+            ScrollView {
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    if ingredients.length == 0: Text {
+                        text: "No ingredients listed.";
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                    }
+
+                    for ing in ingredients: Rectangle {
+                        height: 44px;
+                        background: Theme.surface;
+                        border-radius: 8px;
+
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            alignment: center;
+
+                            if ing.amount != "": Rectangle {
+                                width: 80px;
+                                height: 24px;
+                                background: Theme.tag-bg;
+                                border-radius: 4px;
+
+                                Text {
+                                    text: ing.amount + (ing.unit != "" ? " " + ing.unit : "");
+                                    font-size: 12px;
+                                    color: Theme.tag-text;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: ing.name;
+                                font-size: 14px;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Tab {
+            title: "Instructions";
+
+            ScrollView {
+                Text {
+                    text: recipe.instructions;
+                    font-size: 14px;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Tab {
+            title: "Substitutes";
+
+            ScrollView {
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+
+                    if substitutes.length == 0: Text {
+                        text: "No substitution suggestions for this recipe.";
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                    }
+
+                    for sub in substitutes: Rectangle {
+                        background: Theme.surface;
+                        border-radius: 8px;
+                        min-height: 80px;
+
+                        VerticalBox {
+                            padding: 12px;
+                            spacing: 6px;
+
+                            Text {
+                                text: sub.ingredient;
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                            }
+
+                            Text {
+                                text: "-> " + sub.alternatives;
+                                font-size: 13px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                            }
+
+                            if sub.note != "": Text {
+                                text: sub.note;
+                                font-size: 11px;
+                                color: Theme.text-hint;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

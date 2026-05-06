@@ -1,0 +1,86 @@
+import { Button, LineEdit, TextEdit, VerticalBox, HorizontalBox, TabWidget } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export component AddRecipeDialog inherits VerticalLayout {
+    callback add-url(string);
+    callback add-text(string);
+
+    padding: 16px;
+    spacing: 12px;
+
+    Text {
+        text: "Add a New Recipe";
+        font-size: 18px;
+        font-weight: 700;
+        color: Theme.text-primary;
+        horizontal-alignment: center;
+    }
+
+    TabWidget {
+        vertical-stretch: 1;
+
+        Tab {
+            title: "From URL";
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: "Paste a recipe URL and Stoclove will extract and structure it for you.";
+                    font-size: 13px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+
+                url-input := LineEdit {
+                    placeholder-text: "https://example.com/my-recipe";
+                }
+
+                Button {
+                    text: "Import from URL";
+                    primary: true;
+                    clicked => {
+                        if url-input.text != "" {
+                            root.add-url(url-input.text);
+                            url-input.text = "";
+                        }
+                    }
+                }
+            }
+        }
+
+        Tab {
+            title: "Paste Text";
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: "Paste raw recipe text (e.g., from a photo OCR or any source).";
+                    font-size: 13px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+
+                text-input := TextEdit {
+                    placeholder-text: "Title\nIngredients\n2 cups flour\n1 cup sugar\nInstructions\nMix and bake...";
+                    vertical-stretch: 1;
+                    min-height: 200px;
+                }
+
+                Button {
+                    text: "Import Text";
+                    primary: true;
+                    clicked => {
+                        if text-input.text != "" {
+                            root.add-text(text-input.text);
+                            text-input.text = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

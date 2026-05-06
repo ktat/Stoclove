@@ -1,0 +1,32 @@
+[package]
+name = "stoclove"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "stoclove"
+path = "src/main.rs"
+
+[dependencies]
+slint = "1"
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["full"] }
+scraper = "0.21"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+base64 = "0.22"
+
+[build-dependencies]
+slint-build = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

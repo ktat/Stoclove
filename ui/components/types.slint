@@ -1,0 +1,29 @@
+export struct RecipeModel {
+    id: string,
+    title: string,
+    source-url: string,
+    instructions: string,
+    substitutes-json: string,
+    ingredient-names: string,
+    ingredient-count: int,
+}
+
+export struct IngredientModel {
+    recipe-id: string,
+    name: string,
+    amount: string,
+    unit: string,
+}
+
+export struct SubstituteModel {
+    ingredient: string,
+    alternatives: string,
+    note: string,
+}
+
+export enum AppView {
+    Main,
+    Detail,
+    Stock,
+    AddRecipe,
+}
