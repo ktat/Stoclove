@@ -21,7 +21,20 @@ export struct SubstituteModel {
     note: string,
 }
 
+export struct ModelOptionModel {
+    id: string,
+    name: string,
+    description: string,
+    size-text: string,
+    speed: string,
+    accuracy: string,
+    recommended: bool,
+}
+
 export enum AppView {
+    Setup,        // 初回起動: モデル選択
+    Downloading,  // ダウンロード中
+    Loading,      // モデル読み込み中
     Main,
     Detail,
     Stock,

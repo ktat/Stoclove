@@ -22,7 +22,7 @@ fn main() {
         }
     }
 
-    if let Err(e) = ui::run_app(&db_path_str) {
+    if let Err(e) = ui::run_app(&db_path_str, data_dir()) {
         eprintln!("Application error: {}", e);
         std::process::exit(1);
     }
