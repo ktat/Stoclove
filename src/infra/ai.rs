@@ -60,34 +60,93 @@ struct LlmSubstitute {
 
 // ── テキスト前処理 ─────────────────────────────────────────────────────────────
 
-/// LLM に渡す前にノイズを除去する。
-/// - 1文字だけの行（A/B 等の材料グループ記号、ステップ番号など）を除外
-/// - 【...】で始まる行（画像キャプション）を除外
-/// - 記号のみの行（! 等のアイコン）を除外
-/// - 重複空行をまとめる
+/// ノイズ行を除去する（1文字行・画像キャプション・記号のみ行）。
 pub fn preprocess_text(text: &str) -> String {
     text.lines()
         .filter_map(|line| {
             let t = line.trim();
-            if t.is_empty() {
-                return None;
-            }
-            // 1文字だけ (A B 1 2 等)
-            if t.chars().count() == 1 {
-                return None;
-            }
-            // 画像キャプション 【...】
-            if t.starts_with('【') {
-                return None;
-            }
-            // 記号のみの行
-            if t.chars().all(|c| !c.is_alphanumeric() && !"ぁ-ん".contains(c) && !"ァ-ン".contains(c) && !('\u{4E00}'..='\u{9FFF}').contains(&c)) {
-                return None;
-            }
+            if t.is_empty() { return None; }
+            if t.chars().count() == 1 { return None; }
+            if t.starts_with('【') { return None; }
+            // 記号のみの行（日本語文字・英数字を一切含まない）
+            if t.chars().all(|c| !c.is_alphanumeric()) { return None; }
             Some(t)
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// OllamaLlm 向け: 材料セクションの「名前行 → 分量行」を「名前: 分量」に1行化する。
+/// 日本語レシピの多行フォーマットを LLM が誤解しないようにする。
+pub fn format_recipe_text(text: &str) -> String {
+    let cleaned = preprocess_text(text);
+    let lines: Vec<&str> = cleaned.lines().collect();
+
+    let mut out: Vec<String> = Vec::new();
+    let mut in_ingredients = false;
+    let mut pending_name: Option<String> = None;
+
+    for line in &lines {
+        let t = line.trim();
+        let lower = t.to_lowercase();
+
+        // 材料セクション開始
+        if lower == "材料"
+            || lower.starts_with("材料（")
+            || lower.starts_with("材料(")
+            || lower.contains("ingredient")
+        {
+            in_ingredients = true;
+            flush_pending(&mut pending_name, &mut out);
+            out.push(t.to_string());
+            continue;
+        }
+
+        // 手順セクション開始
+        if lower == "作り方"
+            || lower == "手順"
+            || lower == "下準備"
+            || lower.contains("instruction")
+            || lower.contains("direction")
+        {
+            flush_pending(&mut pending_name, &mut out);
+            in_ingredients = false;
+            out.push(t.to_string());
+            continue;
+        }
+
+        if in_ingredients {
+            // 人数表記はそのまま出力
+            if t.ends_with("人分") || t.ends_with("人前") {
+                flush_pending(&mut pending_name, &mut out);
+                out.push(t.to_string());
+                continue;
+            }
+
+            if is_amount_only(t) {
+                // 前の名前行と結合して「名前: 分量」として出力
+                if let Some(name) = pending_name.take() {
+                    out.push(format!("{}: {}", name, t));
+                } else {
+                    out.push(t.to_string());
+                }
+            } else {
+                // 名前行: 前のものを先に確定させる
+                flush_pending(&mut pending_name, &mut out);
+                pending_name = Some(t.to_string());
+            }
+        } else {
+            out.push(t.to_string());
+        }
+    }
+    flush_pending(&mut pending_name, &mut out);
+    out.join("\n")
+}
+
+fn flush_pending(pending: &mut Option<String>, out: &mut Vec<String>) {
+    if let Some(name) = pending.take() {
+        out.push(name);
+    }
 }
 
 // ── JSON ユーティリティ ────────────────────────────────────────────────────────
@@ -188,7 +247,7 @@ If it IS a recipe, return ONLY this JSON (no markdown, no explanation):
   "is_recipe": true,
   "title": "recipe name (keep original language)",
   "ingredients": [
-    {{"name": "ingredient name", "amount": "numeric quantity or empty string", "unit": "unit like g/ml/cup/tbsp/大さじ/小さじ or empty string"}}
+    {{"name": "ingredient name", "amount": "numeric quantity or empty string", "unit": "unit like g/ml/cup/tbsp/大さじ/小さじ/合 or empty string"}}
   ],
   "instructions": "full cooking steps joined by \\n (keep original language)",
   "substitutes": [
@@ -198,10 +257,10 @@ If it IS a recipe, return ONLY this JSON (no markdown, no explanation):
 
 Rules:
 - Preserve original language (Japanese, English, etc.)
-- Separate number from unit: "200" + "g", NOT "200g"; "1" + "合"; "大さじ" + "1"
+- Separate number from unit: "200" + "g", NOT "200g"; "1" + "合"; amount="1" unit="大さじ"
 - Use "" for missing amount/unit
 - substitutes: only for ingredients hard to find at regular supermarkets; [] if none
-- Japanese recipes often list ingredient name on one line and amount on the next line
+- Ingredients may appear as "name: amount" format — split them correctly into name/amount/unit fields
 
 Text:
 {}"#,
@@ -233,7 +292,7 @@ impl OllamaLlm {
 
 impl LlmClient for OllamaLlm {
     fn analyze_recipe(&self, text: &str) -> Result<Option<AnalyzedRecipe>> {
-        let cleaned = preprocess_text(text);
+        let cleaned = format_recipe_text(text);
         let prompt = build_prompt(&cleaned);
 
         let body = serde_json::json!({
